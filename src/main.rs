@@ -1803,6 +1803,35 @@ fn install_python_runtime(
 
     if let Some(version) = version {
         log_step(&format!("Ensuring python {version}"));
+        // Add this block to accept Conda TOS if not already accepted
+        let tos_status_main = Command::new(bin_dir.join("conda"))
+            .arg("tos")
+            .arg("accept")
+            .arg("--override-channels")
+            .arg("--channel")
+            .arg("https://repo.anaconda.com/pkgs/main")
+            .current_dir(tools_root)
+            .env("PATH", format!("{}:{}", bin_dir.display(), base_system_path()))
+            .stdout(Stdio::null()) // Suppress output
+            .stderr(Stdio::null()) // Suppress output
+            .status()?;
+        
+        let tos_status_r = Command::new(bin_dir.join("conda"))
+            .arg("tos")
+            .arg("accept")
+            .arg("--override-channels")
+            .arg("--channel")
+            .arg("https://repo.anaconda.com/pkgs/r")
+            .current_dir(tools_root)
+            .env("PATH", format!("{}:{}", bin_dir.display(), base_system_path()))
+            .stdout(Stdio::null()) // Suppress output
+            .stderr(Stdio::null()) // Suppress output
+            .status()?;
+
+        if !tos_status_main.success() || !tos_status_r.success() {
+            log_warn("Failed to automatically accept Conda Terms of Service. This may cause issues. Please run 'conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main' and 'conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r' manually.");
+        }
+
         let status = Command::new(bin_dir.join("conda"))
             .arg("install")
             .arg("-y")
