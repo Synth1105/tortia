@@ -1,0 +1,44 @@
+[project]
+name = "python-examples"
+
+[runtimes]
+items = ["python@3.12"] # e.g. ["python@system", "python@3.13"]
+
+[package_managers]
+items = [] # e.g. ["npm", "pnpm", "pip", "uv", "cargo", "go", "deno", "bun"]
+auto_install = true
+
+[runtime_plugins]
+dirs = [".tortia/runtime-plugins", "runtime-plugins"] # searched in order
+
+[package_manager_plugins]
+dirs = [".tortia/package-manager-plugins", "package-manager-plugins"] # searched in order
+
+[system_packages]
+items = ["brew:tcl-tk"] # e.g. ["brew:wget", "apt:libssl-dev", "pacman:jq"]
+auto_install = true
+use_sudo = false
+update = false
+missing_only = false
+
+[extensions]
+dirs = [".tortia/extensions", "extensions"] # searched in order
+before_deps = []
+after_deps = []
+before_build = []
+after_build = []
+before_run = []
+after_run = []
+
+[deps]
+command = "" # e.g. npm ci --prefix app
+
+[build]
+command = "" # e.g. npm run build --prefix app
+
+[run]
+command = "python3 main.py" # e.g. node app/index.js
+
+[bundle]
+include = ["."]
+exclude = [".git", "target"]
