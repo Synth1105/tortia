@@ -1829,7 +1829,7 @@ fn install_python_runtime(
             .status()?;
 
         if !tos_status_main.success() || !tos_status_r.success() {
-            log_warn("Failed to automatically accept Conda Terms of Service. This may cause issues. Please run 'conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main' and 'conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r' manually.");
+            log_error("Failed to automatically accept Conda Terms of Service. This may cause issues. Please run 'conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main' and 'conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r' manually.");
         }
 
         let status = Command::new(bin_dir.join("conda"))
