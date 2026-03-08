@@ -44,7 +44,7 @@ cargo build --release
 ## CLI
 
 ```bash
-tortia init [dir] [--force]
+tortia init [dir] [--force] [--] [args]
 tortia build [dir] [-o|--output <path>]
 tortia run <archive.tortia>
 tortia clean [dir] [--temp] [--cache] [--tools] [--all] [--dry-run]

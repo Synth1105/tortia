@@ -337,11 +337,13 @@ fn main() {
 }
 
 fn run_cli() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
+    let raw_args: Vec<String> = env::args().collect();
+    let (cli_args, serve_passthrough_args) = split_serve_passthrough_args(&raw_args);
+    let cli = Cli::parse_from(cli_args);
     match cli.command {
         Commands::Init { dir, force } => init_tortia(&dir, force),
         Commands::Wrap { dir, output } => build_package(&dir, output),
-        Commands::Serve { archive } => run_package(&archive),
+        Commands::Serve { archive } => run_package(&archive, &serve_passthrough_args),
         Commands::Clean {
             dir,
             temp,
@@ -351,6 +353,20 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
             dry_run,
         } => clean_artifacts(&dir, temp, cache, tools, all, dry_run),
     }
+}
+
+fn split_serve_passthrough_args(args: &[String]) -> (Vec<String>, Vec<String>) {
+    if args.get(1).map(String::as_str) != Some("serve") {
+        return (args.to_vec(), Vec::new());
+    }
+
+    let Some(separator_index) = args.iter().position(|arg| arg == "--") else {
+        return (args.to_vec(), Vec::new());
+    };
+
+    let cli_args = args[..separator_index].to_vec();
+    let passthrough_args = args[separator_index + 1..].to_vec();
+    (cli_args, passthrough_args)
 }
 
 fn init_tortia(dir: &Path, force: bool) -> Result<(), Box<dyn Error>> {
@@ -569,7 +585,7 @@ fn build_package(dir: &Path, output: Option<PathBuf>) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn run_package(archive: &Path) -> Result<(), Box<dyn Error>> {
+fn run_package(archive: &Path, passthrough_args: &[String]) -> Result<(), Box<dyn Error>> {
     if !archive.exists() {
         return Err(format!("Archive not found: {}", archive.display()).into());
     }
@@ -618,11 +634,12 @@ fn run_package(archive: &Path) -> Result<(), Box<dyn Error>> {
         &run_extension_plan,
         ExtensionEvent::BeforeRun,
     )?;
-    log_step(&format!("Running: {}", manifest.run_command));
+    let run_command = append_shell_args(&manifest.run_command, passthrough_args);
+    log_step(&format!("Running: {}", run_command));
 
-    let status = run_shell(&manifest.run_command, temp.path(), &isolated_env)?;
+    let status = run_shell(&run_command, temp.path(), &isolated_env)?;
     if !status.success() {
-        return Err(format!("run command failed: {}", manifest.run_command).into());
+        return Err(format!("run command failed: {}", run_command).into());
     }
     run_extensions(
         temp.path(),
@@ -2146,6 +2163,36 @@ fn run_shell(
     Ok(process.status()?)
 }
 
+fn append_shell_args(command: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return command.to_string();
+    }
+
+    let escaped = args
+        .iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{command} {escaped}")
+}
+
+fn shell_quote(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+
+    let mut quoted = String::from("'");
+    for ch in arg.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\"'\"'");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
 fn parse_bundle_paths(
     bundle: Option<&BundleConfig>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Box<dyn Error>> {
@@ -2341,5 +2388,69 @@ fn log_error(message: &str) {
         eprintln!("{COLOR_RED}[ERROR]{COLOR_RESET} {message}");
     } else {
         eprintln!("[ERROR] {message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_serve_passthrough_args_extracts_args_after_separator() {
+        let args = vec![
+            "tortia".to_string(),
+            "serve".to_string(),
+            "./app.tortia".to_string(),
+            "--".to_string(),
+            "--flag".to_string(),
+            "two words".to_string(),
+        ];
+
+        let (cli_args, passthrough_args) = split_serve_passthrough_args(&args);
+        assert_eq!(
+            cli_args,
+            vec![
+                "tortia".to_string(),
+                "serve".to_string(),
+                "./app.tortia".to_string()
+            ]
+        );
+        assert_eq!(
+            passthrough_args,
+            vec!["--flag".to_string(), "two words".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_serve_passthrough_args_ignores_other_subcommands() {
+        let args = vec![
+            "tortia".to_string(),
+            "clean".to_string(),
+            ".".to_string(),
+            "--".to_string(),
+            "--all".to_string(),
+        ];
+
+        let (cli_args, passthrough_args) = split_serve_passthrough_args(&args);
+        assert_eq!(cli_args, args);
+        assert!(passthrough_args.is_empty());
+    }
+
+    #[test]
+    fn append_shell_args_quotes_each_arg() {
+        let command = append_shell_args(
+            "node app.js",
+            &[
+                "--flag".to_string(),
+                "two words".to_string(),
+                "quote'arg".to_string(),
+                "".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            command,
+            "node app.js '--flag' 'two words' 'quote'\"'\"'arg' ''"
+        );
     }
 }
