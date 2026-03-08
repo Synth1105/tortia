@@ -12,13 +12,14 @@ Then `tortia run` extracts and executes the archive with an isolated `PATH`.
 
 ## Features
 
-- `init`, `build`, `run` commands
+- `init`, `build`, `run`, `clean` commands
 - Colorful logs (`STEP`, `INFO`, `OK`, `ERROR`)
 - Runtime auto-install during build
 - Package manager integration and optional auto dependency install
 - Host system package manager integration (`brew`, `apt`, `pacman`)
 - User extensions (plugin-style event scripts)
 - Runtime/command blocking via shims when not requested
+- Download cache reuse for runtime installers and archives
 - No VM/container runtime required
 
 ## Requirements
@@ -46,7 +47,35 @@ cargo build --release
 tortia init [dir] [--force]
 tortia build [dir] [-o|--output <path>]
 tortia run <archive.tortia>
+tortia clean [dir] [--temp] [--cache] [--tools] [--all] [--dry-run]
 ```
+
+## Cleanup
+
+`tortia clean` removes leftovers from failed/interrupted runs and build caches.
+
+Examples:
+
+```bash
+# default: clean stale temp dirs (tortia-build-*, tortia-run-*)
+tortia clean
+
+# preview only
+tortia clean --all --dry-run
+
+# remove global download cache only
+tortia clean --cache
+
+# remove project-local tools dir only
+tortia clean . --tools
+```
+
+Flags:
+- `--temp`: remove stale temp dirs from the OS temp directory
+- `--cache`: remove global Tortia cache (`TORTIA_CACHE_DIR` or default cache root)
+- `--tools`: remove project-local tools directory (`<project>/.tortia-tools` by default)
+- `--all`: enable `--temp`, `--cache`, and `--tools`
+- `--dry-run`: print targets without deleting them
 
 ## Quick Start
 
@@ -366,6 +395,22 @@ A `.tortia` archive includes:
 - tool directories (for installed runtimes/package managers)
 - `.tortia-manifest.toml` with run metadata
 
+## Paths and Overrides
+
+Tool directory inside build/run payload:
+- default: `.tortia-tools`
+- override: set `TORTIA_TOOLS_DIR` to a relative directory name/path
+
+Global cache directory:
+- override: `TORTIA_CACHE_DIR`
+- defaults:
+  - Linux/macOS: `$XDG_CACHE_HOME/tortia` or `$HOME/.cache/tortia`
+  - Windows: `%LOCALAPPDATA%\\tortia\\cache`
+  - fallback: OS temp directory (`.../tortia-cache`)
+
+Runtime download cache path:
+- `<cache-root>/downloads`
+
 ## Troubleshooting
 
 - `could not resolve host ...`
@@ -374,6 +419,9 @@ A `.tortia` archive includes:
   - Add corresponding runtime in `[runtimes].items`.
 - Large archive size
   - Python (Miniconda) can significantly increase archive size.
+- Slow repeated builds
+  - Tortia now reuses runtime download cache in `<cache-root>/downloads`.
+  - Use `tortia clean --cache` to fully reset cached downloads.
 
 ## Security Note
 

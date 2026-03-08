@@ -1,4 +1,8 @@
+mod cleanup;
+mod paths;
+
 use clap::{Parser, Subcommand};
+use cleanup::{CleanOptions, run_clean};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
@@ -8,11 +12,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CONFIG_FILE: &str = "RecipeFile";
-const TOOLS_DIR: &str = ".tortia-tools";
-const SHIMS_DIR: &str = ".tortia-tools";
-const PM_BIN_DIR: &str = ".tortia-tools/pm/bin";
-const MANIFEST_FILE: &str = ".tortia-manifest.toml";
 const DEFAULT_CONFIG: &str = r#"[project]
 name = "my-app"
 
@@ -82,6 +81,20 @@ enum Commands {
     },
     Run {
         archive: PathBuf,
+    },
+    Clean {
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        #[arg(long)]
+        temp: bool,
+        #[arg(long)]
+        cache: bool,
+        #[arg(long)]
+        tools: bool,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -329,12 +342,20 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
         Commands::Init { dir, force } => init_tortia(&dir, force),
         Commands::Build { dir, output } => build_package(&dir, output),
         Commands::Run { archive } => run_package(&archive),
+        Commands::Clean {
+            dir,
+            temp,
+            cache,
+            tools,
+            all,
+            dry_run,
+        } => clean_artifacts(&dir, temp, cache, tools, all, dry_run),
     }
 }
 
 fn init_tortia(dir: &Path, force: bool) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(dir)?;
-    let config_path = dir.join(CONFIG_FILE);
+    let config_path = dir.join(paths::CONFIG_FILE);
 
     if config_path.exists() && !force {
         return Err(format!(
@@ -347,6 +368,60 @@ fn init_tortia(dir: &Path, force: bool) -> Result<(), Box<dyn Error>> {
     fs::write(&config_path, DEFAULT_CONFIG)?;
     log_success(&format!("Created {}", config_path.display()));
     Ok(())
+}
+
+fn clean_artifacts(
+    dir: &Path,
+    temp: bool,
+    cache: bool,
+    tools: bool,
+    all: bool,
+    dry_run: bool,
+) -> Result<(), Box<dyn Error>> {
+    let mut temp_enabled = temp;
+    let mut cache_enabled = cache;
+    let mut tools_enabled = tools;
+
+    if all {
+        temp_enabled = true;
+        cache_enabled = true;
+        tools_enabled = true;
+    } else if !temp_enabled && !cache_enabled && !tools_enabled {
+        temp_enabled = true;
+    }
+
+    let options = CleanOptions {
+        project_dir: dir.to_path_buf(),
+        temp: temp_enabled,
+        cache: cache_enabled,
+        tools: tools_enabled,
+        dry_run,
+    };
+    let report = run_clean(&options)?;
+
+    if dry_run {
+        log_info("Dry-run mode: no files were removed");
+    }
+    for path in &report.removed {
+        if dry_run {
+            log_info(&format!("Would remove {}", path.display()));
+        } else {
+            log_info(&format!("Removed {}", path.display()));
+        }
+    }
+    for path in &report.missing {
+        log_info(&format!("Not found {}", path.display()));
+    }
+    for (path, err) in &report.failed {
+        log_error(&format!("Failed to remove {} ({err})", path.display()));
+    }
+
+    if report.failed.is_empty() {
+        log_success("Clean completed");
+        Ok(())
+    } else {
+        Err("clean completed with failures".into())
+    }
 }
 
 fn build_package(dir: &Path, output: Option<PathBuf>) -> Result<(), Box<dyn Error>> {
@@ -373,7 +448,7 @@ fn build_package(dir: &Path, output: Option<PathBuf>) -> Result<(), Box<dyn Erro
     )?;
 
     log_step(&format!("Preparing stage for {project_name}"));
-    let temp = TempDir::new("tortia-build")?;
+    let temp = TempDir::new(paths::BUILD_TEMP_PREFIX)?;
     let stage_root = temp.path().join("payload");
     fs::create_dir_all(&stage_root)?;
 
@@ -468,7 +543,7 @@ fn build_package(dir: &Path, output: Option<PathBuf>) -> Result<(), Box<dyn Erro
     };
 
     let manifest_toml = toml::to_string_pretty(&manifest)?;
-    fs::write(stage_root.join(MANIFEST_FILE), manifest_toml)?;
+    fs::write(stage_root.join(paths::MANIFEST_FILE), manifest_toml)?;
 
     if archive_path.exists() {
         fs::remove_file(&archive_path)?;
@@ -500,7 +575,7 @@ fn run_package(archive: &Path) -> Result<(), Box<dyn Error>> {
     }
 
     let archive = fs::canonicalize(archive)?;
-    let temp = TempDir::new("tortia-run")?;
+    let temp = TempDir::new(paths::RUN_TEMP_PREFIX)?;
 
     log_step(&format!("Extracting {}", archive.display()));
     let output_arg = format!("-o{}", temp.path().display());
@@ -518,9 +593,9 @@ fn run_package(archive: &Path) -> Result<(), Box<dyn Error>> {
         return Err("7z failed while extracting .tortia archive".into());
     }
 
-    let manifest_path = temp.path().join(MANIFEST_FILE);
+    let manifest_path = temp.path().join(paths::MANIFEST_FILE);
     if !manifest_path.exists() {
-        return Err(format!("Invalid .tortia file: missing {MANIFEST_FILE}").into());
+        return Err(format!("Invalid .tortia file: missing {}", paths::MANIFEST_FILE).into());
     }
 
     let manifest: TortiaManifest = toml::from_str(&fs::read_to_string(&manifest_path)?)?;
@@ -562,7 +637,7 @@ fn run_package(archive: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn read_config(project_root: &Path) -> Result<TortiaConfig, Box<dyn Error>> {
-    let path = project_root.join(CONFIG_FILE);
+    let path = project_root.join(paths::CONFIG_FILE);
     let data = fs::read_to_string(&path)
         .map_err(|_| format!("failed to read {}", path.to_string_lossy()))?;
     let config: TortiaConfig = toml::from_str(&data)?;
@@ -810,7 +885,9 @@ fn parse_extension_plan(
     })
 }
 
-fn extension_plan_from_manifest(manifest: &TortiaManifest) -> Result<ExtensionPlan, Box<dyn Error>> {
+fn extension_plan_from_manifest(
+    manifest: &TortiaManifest,
+) -> Result<ExtensionPlan, Box<dyn Error>> {
     Ok(ExtensionPlan {
         dirs: parse_extension_paths(&manifest.extension_dirs, "manifest.extension_dirs")?,
         before_deps: Vec::new(),
@@ -1167,7 +1244,7 @@ fn ensure_package_managers(
     }
 
     log_step("Preparing package managers");
-    let pm_bin_root = stage_root.join(PM_BIN_DIR);
+    let pm_bin_root = stage_root.join(paths::pm_bin_relative());
     fs::create_dir_all(&pm_bin_root)?;
 
     for manager in managers {
@@ -1430,6 +1507,52 @@ fn write_executable_script(path: &Path, body: &str) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
+fn download_with_cache(
+    url: &str,
+    cache_key: &str,
+    destination: &Path,
+    working_dir: &Path,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let cache_path = paths::downloads_cache_dir().join(cache_key);
+    if cache_path.exists() {
+        fs::copy(&cache_path, destination)?;
+        log_info(&format!("Using cached download {}", cache_path.display()));
+        return Ok(());
+    }
+
+    log_info(&format!("Downloading {}", url));
+    let download_status = Command::new("curl")
+        .arg("-fsSL")
+        .arg(url)
+        .arg("-o")
+        .arg(destination)
+        .current_dir(working_dir)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if !download_status.success() {
+        return Err(format!("failed to download {url}").into());
+    }
+
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Err(err) = fs::copy(destination, &cache_path) {
+        log_info(&format!(
+            "Could not write download cache {} ({err})",
+            cache_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
 fn ensure_runtimes(
     stage_root: &Path,
     specs: &[RuntimeSpec],
@@ -1439,7 +1562,7 @@ fn ensure_runtimes(
         return Ok(Vec::new());
     }
 
-    let tools_root = stage_root.join(TOOLS_DIR);
+    let tools_root = stage_root.join(paths::tools_dir_name());
     fs::create_dir_all(&tools_root)?;
 
     let mut bins = Vec::new();
@@ -1493,21 +1616,12 @@ fn install_node_runtime(tools_root: &Path, version: &str) -> Result<PathBuf, Box
     let archive_name = format!("{folder}.tar.xz");
     let archive_path = tools_root.join(&archive_name);
     let url = format!("https://nodejs.org/dist/v{version}/{archive_name}");
-
-    let download_status = Command::new("curl")
-        .arg("-fsSL")
-        .arg(&url)
-        .arg("-o")
-        .arg(&archive_path)
-        .current_dir(tools_root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
-
-    if !download_status.success() {
-        return Err(format!("failed to download node runtime from {url}").into());
-    }
+    download_with_cache(
+        &url,
+        &format!("node/{archive_name}"),
+        &archive_path,
+        tools_root,
+    )?;
 
     let extract_status = Command::new("tar")
         .arg("-xJf")
@@ -1544,20 +1658,12 @@ fn install_rust_runtime(tools_root: &Path, toolchain: &str) -> Result<PathBuf, B
     if !bin_dir.join("rustup").exists() {
         log_step("Installing runtime rustup");
         let init_script = tools_root.join("rustup-init.sh");
-        let download_status = Command::new("curl")
-            .arg("-fsSL")
-            .arg("https://sh.rustup.rs")
-            .arg("-o")
-            .arg(&init_script)
-            .current_dir(tools_root)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
-
-        if !download_status.success() {
-            return Err("failed to download rustup-init script".into());
-        }
+        download_with_cache(
+            "https://sh.rustup.rs",
+            "scripts/rustup-init.sh",
+            &init_script,
+            tools_root,
+        )?;
 
         let install_status = Command::new("sh")
             .arg(&init_script)
@@ -1653,21 +1759,12 @@ fn install_python_runtime(
         log_step("Installing runtime python (Miniconda)");
         let installer_path = tools_root.join("miniconda-installer.sh");
         let url = format!("https://repo.anaconda.com/miniconda/Miniconda3-latest-{platform}.sh");
-
-        let download_status = Command::new("curl")
-            .arg("-fsSL")
-            .arg(&url)
-            .arg("-o")
-            .arg(&installer_path)
-            .current_dir(tools_root)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
-
-        if !download_status.success() {
-            return Err(format!("failed to download miniconda from {url}").into());
-        }
+        download_with_cache(
+            &url,
+            &format!("python/miniconda-{platform}.sh"),
+            &installer_path,
+            tools_root,
+        )?;
 
         let install_status = Command::new("sh")
             .arg(&installer_path)
@@ -1739,21 +1836,12 @@ fn install_go_runtime(tools_root: &Path, version: &str) -> Result<PathBuf, Box<d
     let archive_name = format!("go{version}.{os}-{arch}.tar.gz");
     let archive_path = tools_root.join(&archive_name);
     let url = format!("https://go.dev/dl/{archive_name}");
-
-    let download_status = Command::new("curl")
-        .arg("-fsSL")
-        .arg(&url)
-        .arg("-o")
-        .arg(&archive_path)
-        .current_dir(tools_root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
-
-    if !download_status.success() {
-        return Err(format!("failed to download go runtime from {url}").into());
-    }
+    download_with_cache(
+        &url,
+        &format!("go/{archive_name}"),
+        &archive_path,
+        tools_root,
+    )?;
 
     let extract_status = Command::new("tar")
         .arg("-xzf")
@@ -1798,20 +1886,12 @@ fn install_deno_runtime(
 
     fs::create_dir_all(&install_dir)?;
     let script_path = tools_root.join("deno-install.sh");
-    let download_status = Command::new("curl")
-        .arg("-fsSL")
-        .arg("https://deno.land/install.sh")
-        .arg("-o")
-        .arg(&script_path)
-        .current_dir(tools_root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
-
-    if !download_status.success() {
-        return Err("failed to download deno install script".into());
-    }
+    download_with_cache(
+        "https://deno.land/install.sh",
+        "scripts/deno-install.sh",
+        &script_path,
+        tools_root,
+    )?;
 
     let mut install_cmd = Command::new("sh");
     install_cmd
@@ -1861,20 +1941,12 @@ fn install_bun_runtime(
 
     fs::create_dir_all(&install_dir)?;
     let script_path = tools_root.join("bun-install.sh");
-    let download_status = Command::new("curl")
-        .arg("-fsSL")
-        .arg("https://bun.sh/install")
-        .arg("-o")
-        .arg(&script_path)
-        .current_dir(tools_root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
-
-    if !download_status.success() {
-        return Err("failed to download bun install script".into());
-    }
+    download_with_cache(
+        "https://bun.sh/install",
+        "scripts/bun-install.sh",
+        &script_path,
+        tools_root,
+    )?;
 
     let mut install_cmd = Command::new("sh");
     install_cmd
@@ -1906,7 +1978,7 @@ fn install_bun_runtime(
 
 fn prepare_runtime_shims(stage_root: &Path, specs: &[RuntimeSpec]) -> Result<(), Box<dyn Error>> {
     let requested: HashSet<RuntimeFamily> = specs.iter().map(RuntimeSpec::family).collect();
-    let shims_root = stage_root.join(SHIMS_DIR);
+    let shims_root = stage_root.join(paths::tools_dir_name());
     fs::create_dir_all(&shims_root)?;
 
     let runtime_commands: &[(RuntimeFamily, &[&str])] = &[
@@ -1966,12 +2038,12 @@ fn runtime_family_name(family: RuntimeFamily) -> &'static str {
 fn build_isolated_env(payload_root: &Path, runtime_bin_paths: &[PathBuf]) -> Vec<(String, String)> {
     let mut path_entries: Vec<String> = Vec::new();
 
-    let shims_dir = payload_root.join(SHIMS_DIR);
+    let shims_dir = payload_root.join(paths::tools_dir_name());
     if shims_dir.exists() {
         path_entries.push(shims_dir.to_string_lossy().to_string());
     }
 
-    let pm_bin_dir = payload_root.join(PM_BIN_DIR);
+    let pm_bin_dir = payload_root.join(paths::pm_bin_relative());
     if pm_bin_dir.exists() {
         path_entries.push(pm_bin_dir.to_string_lossy().to_string());
     }
@@ -1987,7 +2059,7 @@ fn build_isolated_env(payload_root: &Path, runtime_bin_paths: &[PathBuf]) -> Vec
 
     let mut envs = vec![("PATH".to_string(), path_entries.join(":"))];
 
-    let cargo_home = payload_root.join(TOOLS_DIR).join("cargo");
+    let cargo_home = payload_root.join(paths::tools_dir_name()).join("cargo");
     if cargo_home.exists() {
         envs.push((
             "CARGO_HOME".to_string(),
@@ -1995,7 +2067,7 @@ fn build_isolated_env(payload_root: &Path, runtime_bin_paths: &[PathBuf]) -> Vec
         ));
     }
 
-    let rustup_home = payload_root.join(TOOLS_DIR).join("rustup");
+    let rustup_home = payload_root.join(paths::tools_dir_name()).join("rustup");
     if rustup_home.exists() {
         envs.push((
             "RUSTUP_HOME".to_string(),
