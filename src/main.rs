@@ -73,13 +73,13 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    Build {
+    Wrap {
         #[arg(default_value = ".")]
         dir: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    Run {
+    Serve {
         archive: PathBuf,
     },
     Clean {
@@ -340,8 +340,8 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { dir, force } => init_tortia(&dir, force),
-        Commands::Build { dir, output } => build_package(&dir, output),
-        Commands::Run { archive } => run_package(&archive),
+        Commands::Wrap { dir, output } => build_package(&dir, output),
+        Commands::Serve { archive } => run_package(&archive),
         Commands::Clean {
             dir,
             temp,
