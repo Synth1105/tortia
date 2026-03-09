@@ -37,8 +37,7 @@ Notes:
 ## Install / Build
 
 ```bash
-cargo build --release
-# binary: target/release/tortia
+cargo install tortia
 ```
 
 ## CLI
