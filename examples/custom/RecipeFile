@@ -1,27 +1,16 @@
 [project]
 name = "custom-plugin-example"
 
-[runtimes]
-items = ["echo"]
+[extensions]
+dirs = ["runtime-plugins", "package-manager-plugins"]
+    before_deps = ["echo", "noop"]
 
-[package_managers]
-items = ["noop"]
-auto_install = true
-
-[runtime_plugins]
-dirs = ["runtime-plugins"]
-
-[package_manager_plugins]
-dirs = ["package-manager-plugins"]
-
-[deps]
-command = ""
 
 [build]
 command = ""
 
 [run]
-command = "echo-lang"
+command = ""
 
 [bundle]
 include = ["app.txt"]
